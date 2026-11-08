@@ -2,8 +2,6 @@ package me.weishu.kernelsu.ui.theme
 
 import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -45,8 +43,7 @@ fun MiuixKernelSUTheme(
     val resolvedKeyColor: Color? = when {
         appSettings.keyColor != 0 -> Color(appSettings.keyColor)
         appSettings.colorMode.isMonet ->
-            if (darkTheme) dynamicDarkColorScheme(context).primary
-            else dynamicLightColorScheme(context).primary
+            systemAccentColor(context, darkTheme)
 
         else -> null
     }

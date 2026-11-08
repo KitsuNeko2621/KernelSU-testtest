@@ -25,6 +25,17 @@ fun ColorScheme.amoledBackground(amoled: Boolean): ColorScheme =
         surfaceContainerHighest = Color.Black,
     )
 
+/**
+ * Warna aksen sistem (Material You) hanya ada di Android 12+ (API 31).
+ * Di Android 10/11 dipakai warna fallback agar tidak crash.
+ */
+fun systemAccentColor(context: android.content.Context, isDark: Boolean): Color =
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+        (if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)).primary
+    } else {
+        Color(0xFF3A7BD5)
+    }
+
 @Composable
 fun rememberKernelSUColorScheme(
     seedColor: Color,
@@ -35,7 +46,7 @@ fun rememberKernelSUColorScheme(
 ): ColorScheme {
     val context = LocalContext.current
     val seed = if (seedColor == Color.Unspecified) {
-        (if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)).primary
+        systemAccentColor(context, isDark)
     } else {
         seedColor
     }
