@@ -1,0 +1,137 @@
+name: Manager Release
+
+# Build Manager KernelSU saja (ksud arm64 + APK release) lalu publish ke GitHub Releases.
+# Jalankan manual: tab Actions -> "Manager Release" -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag release (kosongkan = manager-<nomor run>)"
+        required: false
+        type: string
+      prerelease:
+        description: "Tandai sebagai pre-release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # version code & name dihitung dari riwayat git
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Rust
+        run: |
+          rustup update stable
+          rustup target add aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: userspace/ksud
+          cache-targets: false
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29
+
+      - name: Build ksud (arm64)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
+          cargo build --target "$TRIPLE" --release --manifest-path ./userspace/ksud/Cargo.toml
+          mkdir -p manager/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/ksud manager/app/src/main/jniLibs/arm64-v8a/libksud.so
+
+      - name: Siapkan signing key
+        env:
+          KS_B64: ${{ secrets.KEYSTORE }}
+          KS_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KS_KEYPASS: ${{ secrets.KEY_PASSWORD }}
+        working-directory: manager
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "Memakai keystore dari secrets"
+            echo "$KS_B64" | base64 -d > key.jks
+            ALIAS="$KS_ALIAS"; SPASS="$KS_PASS"; KPASS="$KS_KEYPASS"
+          else
+            echo "::warning::Secret KEYSTORE tidak ada -> membuat key sementara. Tanda tangan APK akan BERBEDA tiap build."
+            SPASS=$(openssl rand -hex 16); KPASS="$SPASS"; ALIAS="ksu"
+            echo "::add-mask::$SPASS"
+            keytool -genkeypair -alias "$ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$SPASS" -keypass "$KPASS" -dname "CN=KernelSU Custom" \
+              -storetype JKS -keystore key.jks
+          fi
+
+          {
+            echo
+            echo "KEYSTORE_FILE=key.jks"
+            echo "KEYSTORE_PASSWORD=$SPASS"
+            echo "KEY_ALIAS=$ALIAS"
+            echo "KEY_PASSWORD=$KPASS"
+          } >> gradle.properties
+
+          # Ukuran & hash sertifikat -> dipakai kernel (KSU_EXPECTED_SIZE / KSU_EXPECTED_HASH)
+          keytool -exportcert -alias "$ALIAS" -keystore key.jks -storepass "$SPASS" -file cert.der
+          SIZE_HEX=$(printf '0x%04x' "$(stat -c%s cert.der)")
+          HASH=$(sha256sum cert.der | awk '{print $1}')
+          rm -f cert.der
+          {
+            echo "### Signature Manager (untuk build kernel)"
+            echo '```'
+            echo "KSU_EXPECTED_SIZE=$SIZE_HEX"
+            echo "KSU_EXPECTED_HASH=$HASH"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "KSU_EXPECTED_SIZE=$SIZE_HEX"
+          echo "KSU_EXPECTED_HASH=$HASH"
+
+      - name: Build Manager (release)
+        working-directory: manager
+        run: |
+          chmod +x gradlew
+          ./gradlew clean assembleRelease
+
+      - name: Rapikan nama APK
+        id: apk
+        run: |
+          mkdir -p dist
+          APK=$(find manager/app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          test -n "$APK"
+          VER=$(git describe --tags --always | sed 's/^v//')
+          OUT="dist/KernelSU-Manager_${VER}_minsdk29.apk"
+          cp "$APK" "$OUT"
+          echo "path=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: manager
+          path: dist/*.apk
+
+      - name: Buat GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || format('manager-{0}', github.run_number) }}
+          name: Manager ${{ inputs.tag || format('manager-{0}', github.run_number) }}
+          prerelease: ${{ inputs.prerelease }}
+          files: ${{ steps.apk.outputs.path }}
+          body: |
+            KernelSU Manager (minSdk 29, ksud arm64-v8a).
+            Nilai `KSU_EXPECTED_SIZE` / `KSU_EXPECTED_HASH` untuk kernel ada di ringkasan run Actions.
